@@ -1,6 +1,9 @@
 #include <iostream>
 #include <fstream>
-#include <list>
+#include <sstream>
+#include <iterator>
+#include <vector>
+#include <algorithm>
 #include <unistd.h>
 
 using namespace std;
@@ -8,12 +11,12 @@ using namespace std;
 struct Request {
     string method;
     string path;
-    list<string> data;
+    vector<char> data;
 };
 
 struct Respond {
     int status_code;
-    list<string> data;
+    vector<char> data;
 };
 
 class Handler {
@@ -25,11 +28,10 @@ class Handler {
     void build_response();
 public:
     Handler(string dir_path_): dir_path(dir_path_) {}
-    int handle() {
+    void handle() {
         parse_request();
         handle_request();
         build_response();
-        return 0;
     }
 };
 
@@ -43,48 +45,55 @@ void Handler::parse_request() {
     }
     if (!request.method.compare("POST")) {
         string tmp;
-        // Skip headers
+        size_t cont_len = string::npos;
+        // Skip headers except Content-Length
+        // FIXME
         getline(cin, tmp);
         do {
             getline(cin, tmp);
+            if (cont_len == string::npos && tmp.find("Content-Length") != string::npos) {
+                string cont_len_str;
+                stringstream ss(tmp, ios_base::in);
+                ss >> cont_len_str >> cont_len;
+            }
         } while (tmp.size() > 0);
         // Get payload
-        while (getline(cin , tmp)) {
-            request.data.push_back(tmp);
-            //cout << tmp << endl;
-        }
+        // FIXME
+        cin.unsetf(std::ios::skipws);
+        istream_iterator<char> stream_begin(cin), stream_end;
+        copy(stream_begin, stream_end, back_inserter(request.data));
     }
 }
 
 void Handler::handle_request() {
     if (!request.method.compare("GET") || !request.method.compare("HEAD")) {
-        ifstream ifs(dir_path + request.path, ifstream::in);
+        ifstream ifs(dir_path + request.path, ifstream::in | ifstream::binary);
         if (!ifs.good()) {
             ifs.close();
             respond.status_code = 404;
         } else {
             if (!request.method.compare("GET")) {
-                string tmp;
-                while (getline(ifs, tmp)) {
-                    respond.data.push_back(tmp);
-                    //cout << tmp << endl;
-                }
+                ifs.unsetf(std::ios::skipws);
+                istream_iterator<char> stream_begin(ifs), stream_end;
+                copy(stream_begin, stream_end, back_inserter(respond.data));
             }
             respond.status_code = 200;
             ifs.close();
         }
     } else if (!request.method.compare("POST")) {
-        ofstream ofs(dir_path + request.path, ifstream::out | ifstream::app);
+        ofstream ofs(dir_path + request.path, ifstream::out | ifstream::app | ifstream::binary);
         if (!ofs.good()) {
             // Access denied
             ofs.close();
             cerr << "Access denied";
             exit(1);
         }
-        for (auto iter = request.data.begin(); iter != request.data.end(); ++iter) {
-            ofs << *iter << endl;
-            //cout << *iter << endl;
-        }
+        // FIXME
+        /*
+        ofs.unsetf(std::ios::skipws);
+        ostream_iterator<char> stream_begin(ofs);
+        copy(request.data.begin(), request.data.end(), stream_begin);
+        */
         respond.status_code = 200;
         ofs.close();
     } else {
@@ -104,9 +113,7 @@ void Handler::build_response() {
     if (respond.status_code == 200) {
         if (!request.method.compare("GET")) {
             cout << endl;
-            for (auto iter = respond.data.begin(); iter != respond.data.end(); ++iter) {
-                cout << *iter << endl;
-            }
+            copy(respond.data.begin(), respond.data.end(), ostream_iterator<char>(cout));
         }
     }
 }
