@@ -11,12 +11,13 @@ using namespace std;
 struct Request {
     string method;
     string path;
-    vector<char> data;
+    // input data
 };
 
+// FIXME
 struct Respond {
     int status_code;
-    vector<char> data;
+    // output data
 };
 
 class Handler {
@@ -25,13 +26,11 @@ class Handler {
     Respond respond;
     void parse_request();
     void handle_request();
-    void build_response();
 public:
     Handler(string dir_path_): dir_path(dir_path_) {}
     void handle() {
         parse_request();
         handle_request();
-        build_response();
     }
 };
 
@@ -47,7 +46,6 @@ void Handler::parse_request() {
         string tmp;
         size_t cont_len = string::npos;
         // Skip headers except Content-Length
-        // FIXME
         getline(cin, tmp);
         do {
             getline(cin, tmp);
@@ -58,10 +56,11 @@ void Handler::parse_request() {
             }
         } while (tmp.size() > 0);
         // Get payload
-        // FIXME
+        /*
         cin.unsetf(std::ios::skipws);
         istream_iterator<char> stream_begin(cin), stream_end;
         copy(stream_begin, stream_end, back_inserter(request.data));
+        */
     }
 }
 
@@ -70,14 +69,15 @@ void Handler::handle_request() {
         ifstream ifs(dir_path + request.path, ifstream::in | ifstream::binary);
         if (!ifs.good()) {
             ifs.close();
-            respond.status_code = 404;
+            cout << "HTTP/1.0 " << "404 " << "Not Found" << endl;
         } else {
+            cout << "HTTP/1.0 " << "200 " << "OK" << endl;
             if (!request.method.compare("GET")) {
                 ifs.unsetf(std::ios::skipws);
                 istream_iterator<char> stream_begin(ifs), stream_end;
-                copy(stream_begin, stream_end, back_inserter(respond.data));
+                ostream_iterator<char> output_stream(cout);
+                copy(stream_begin, stream_end, output_stream);
             }
-            respond.status_code = 200;
             ifs.close();
         }
     } else if (!request.method.compare("POST")) {
@@ -88,33 +88,17 @@ void Handler::handle_request() {
             cerr << "Access denied";
             exit(1);
         }
-        // FIXME
         /*
         ofs.unsetf(std::ios::skipws);
         ostream_iterator<char> stream_begin(ofs);
         copy(request.data.begin(), request.data.end(), stream_begin);
         */
-        respond.status_code = 200;
+        cout << "HTTP/1.0 " << "200 " << "OK" << endl;
         ofs.close();
     } else {
         // Unknown method
         cerr << "Unknown method";
         exit(1);
-    }
-}
-
-void Handler::build_response() {
-    string status;
-    switch (respond.status_code) {
-        case 200: status = "OK"; break;
-        case 404: status = "Not Found"; break;
-    }
-    cout << "HTTP/1.0 " << respond.status_code << " " << status << endl;
-    if (respond.status_code == 200) {
-        if (!request.method.compare("GET")) {
-            cout << endl;
-            copy(respond.data.begin(), respond.data.end(), ostream_iterator<char>(cout));
-        }
     }
 }
 
