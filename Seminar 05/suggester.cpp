@@ -1,8 +1,12 @@
-#include <iostream>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <netinet/in.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
 #include <string.h>
+
+#include <iostream>
 #include <fstream>
 
 using namespace std;
@@ -10,6 +14,8 @@ using namespace std;
 #define N_WORKERS 4
 #define S_WORDS 32
 #define N_WORDS 10
+#define N_CACHED 10
+#define TTL 1
 
 ssize_t sock_fd_write(int sock, int fd) {
     ssize_t size;
@@ -77,48 +83,129 @@ int sock_fd_read(int sock) {
         return *((int *) CMSG_DATA(cmsg));
 }
 
-void worker(int master_socket) {
+struct cached_elem {
+    char ttl = 0;
+    char request[S_WORDS];
+    char respond[(S_WORDS + 1) * N_WORDS];
+};
+
+class Mutex {
+    int mutex_id;
+public:
+    Mutex() {
+        key_t ipc_key = ftok("/ets/passwd", '0');
+        mutex_id = semget(ipc_key, 1, IPC_CREAT | 0777);
+        semctl(mutex_id, 0, SETVAL, 1);
+    }
+    ~Mutex() {
+        semctl(mutex_id, 0, IPC_RMID);
+    }
+    int lock() {
+        struct sembuf buf = {0, -1, 0};
+        return semop(mutex_id, &buf, 1);
+    }
+    int unlock() {
+        struct sembuf buf = {0, 1, 0};
+        return semop(mutex_id, &buf, 1);
+    }
+};
+
+class Memory {
+    int mem_id;
+    cached_elem *cache;
+public:
+    Memory() {
+        key_t ipc_key = ftok("/ets/passwd", '0');
+        mem_id = shmget(ipc_key, sizeof(cached_elem) * N_CACHED, IPC_CREAT | 0777);
+        cache = (struct cached_elem *) shmat(mem_id, NULL, 0);
+    }
+    ~Memory() {
+        shmdt(cache);
+        shmctl(mem_id, IPC_RMID, NULL);
+    }
+    cached_elem *get() {
+        return cache;
+    }
+};
+
+class Shared_cache {
+private:
+    Mutex mutex;
+    Memory memory;
+public:
+    Shared_cache() {
+    }
+    char *get_resp(char *request) {
+        cached_elem *cache = memory.get();
+        int index;
+        mutex.lock();
+        // Search in cache
+        for (index = 0; index < N_CACHED; index++) {
+            if (cache[index].ttl == 0)
+                break;
+            else {
+                if (strcmp(cache[index].request, request) == 0) {
+                    char *response = (char *) malloc ((S_WORDS + 1) * N_WORDS);
+                    strcpy(response, cache[index].respond);
+                    mutex.unlock();
+                    return response;
+                }
+            }
+        }
+        if (index == N_CACHED)
+            index = 0;
+        cache[index].ttl = TTL;
+        strcpy(cache[index].request, request);
+        cache[index].respond[0] = '\0';
+        // Search in file
+        const size_t len = strlen(request);
+        ifstream ifs("words.txt", ifstream::in);
+        int counter = 0;
+        while (ifs.good() && (counter < N_WORDS)) {
+            string tmp;
+            ifs >> tmp;
+            if (strncmp(request, tmp.c_str(), len) == 0) {
+                strcat(cache[index].respond, tmp.append("\n").data());
+                counter++;
+            }
+        }
+        ifs.close();
+        // Make response
+        char *response = (char *) malloc ((S_WORDS + 1) * N_WORDS);
+        strcpy(response, cache[index].respond);
+        mutex.unlock();
+        return response;
+    }
+};
+
+void worker(int master_socket, Shared_cache *cache) {
     while (true) {
-        char buf[S_WORDS];
-        char response[(S_WORDS + 1) * N_WORDS] = "";
+        char request[S_WORDS];
         // Get client request
         int client_socket = sock_fd_read(master_socket);
-        ssize_t req_size = recv(client_socket, buf, S_WORDS, 0);
+        ssize_t req_size = recv(client_socket, request, S_WORDS, 0);
         if (req_size < 0) {
             cerr << "recv failed\n";
             shutdown(client_socket, SHUT_RDWR);
             continue;
         }
-        if (buf[req_size - 1] == '\n')
-            buf[req_size - 1] = 0;
+        if (request[req_size - 1] == '\n')
+            request[req_size - 1] = 0;
         else
-            buf[req_size] = 0;
-        const int len = strlen(buf);
-        // Search
-        ifstream ifs("words.txt", ifstream::in);
-        int counter = 0;
-        while (ifs.good() && counter < N_WORDS) {
-            string tmp;
-            ifs >> tmp;
-            if (strncmp(buf, tmp.c_str(), len) == 0) {
-                strcat(response, tmp.append("\n").data());
-                counter++;
-            }
-        }
-        ifs.close();
+            request[req_size] = 0;
+        // Get responde
+        char *response = cache->get_resp(request);
         // Send response
         ssize_t resp_size = send(client_socket, response, strlen(response), 0);
-        if (resp_size < strlen(response)) {
-            cerr << "recv failed\n";
-            shutdown(client_socket, SHUT_RDWR);
-            continue;
-        }
+        free(response);
         // Handle client
         shutdown(client_socket, SHUT_RDWR);
     }
 }
 
-void master(uint16_t port = 12345) {
+void master(uint16_t port) {
+    // Init cache
+    Shared_cache cache;
     // Init workers
     int worker_socket[N_WORKERS];
     for (int i = 0; i < N_WORKERS; i++) {
@@ -126,7 +213,7 @@ void master(uint16_t port = 12345) {
         socketpair(AF_UNIX, SOCK_STREAM, 0, socket_pair);
         if (!fork()) {
             close(socket_pair[0]);
-            worker(socket_pair[1]);
+            worker(socket_pair[1], &cache);
             exit(0);
         } else {
             close(socket_pair[1]);
@@ -167,7 +254,8 @@ void master(uint16_t port = 12345) {
     }
 }
 
-int main() {
-    master();
+int main(int argc, char *argv[]) {
+    uint16_t port = 12345;
+    master(port);
     return 0;
 }
