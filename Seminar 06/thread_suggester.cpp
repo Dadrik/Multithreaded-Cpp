@@ -23,21 +23,22 @@ struct cached_elem {
 };
 
 class Shared_cache {
-    mutex Mutex;
+    pthread_rwlock_t rwlock = PTHREAD_RWLOCK_INITIALIZER;
     unordered_map<string, cached_elem> cache;
 public:
     char *get_response(char *request) {
         int index;
         char *response = (char *) malloc ((S_WORDS + 1) * N_WORDS);
-        Mutex.lock();
+        pthread_rwlock_rdlock(&rwlock);
         // Search in cache
         auto res = cache.find(string(request));
         if (res != cache.end()) {
             strcpy(response, res->second.respond);
             res->second.ttl = TTL;
-            Mutex.unlock();
+            pthread_rwlock_unlock(&rwlock);
             return response;
         }
+        pthread_rwlock_unlock(&rwlock);
         // Search in file
         response[0] = '\0';
         const size_t len = strlen(request);
@@ -55,13 +56,14 @@ public:
         cached_elem new_elem;
         new_elem.ttl = TTL;
         strcpy(new_elem.respond, response);
+        pthread_rwlock_wrlock(&rwlock);
         cache.insert(pair<string, cached_elem>(string(request), new_elem));
-        Mutex.unlock();
+        pthread_rwlock_unlock(&rwlock);
         // Make response
         return response;
     }
     void ttl_decr() {
-        Mutex.lock();
+        pthread_rwlock_wrlock(&rwlock);
         auto iter = cache.begin();
         while (iter != cache.end()) {
             iter->second.ttl--;
@@ -71,7 +73,7 @@ public:
                 ++iter;
             }
         }
-        Mutex.unlock();
+        pthread_rwlock_unlock(&rwlock);
     }
 } cache;
 
