@@ -118,6 +118,7 @@ public:
         key_t ipc_key = ftok("/ets/passwd", '0');
         mem_id = shmget(ipc_key, sizeof(cached_elem) * N_CACHED, IPC_CREAT | 0777);
         cache = (struct cached_elem *) shmat(mem_id, NULL, 0);
+        bzero(cache, sizeof(cached_elem) * N_CACHED);
     }
     ~Memory() {
         shmdt(cache);
@@ -133,30 +134,33 @@ private:
     Mutex mutex;
     Memory memory;
 public:
-    Shared_cache() {
-    }
     char *get_resp(char *request) {
         cached_elem *cache = memory.get();
-        int index;
-        mutex.lock();
         // Search in cache
-        for (index = 0; index < N_CACHED; index++) {
-            if (cache[index].ttl == 0)
-                break;
+        mutex.lock();
+        int write_ind = 0;
+        char min_ttl = cache[0].ttl;
+        for (int index = 0; index < N_CACHED; index++) {
+            if (cache[index].ttl == 0) {
+                min_ttl = 0;
+                write_ind = index;
+                continue;
+            }
             else {
                 if (strcmp(cache[index].request, request) == 0) {
                     char *response = (char *) malloc ((S_WORDS + 1) * N_WORDS);
                     strcpy(response, cache[index].respond);
                     mutex.unlock();
                     return response;
+                } else if (cache[index].ttl < min_ttl) {
+                    min_ttl = cache[index].ttl;
+                    write_ind = index;
                 }
             }
         }
-        if (index == N_CACHED)
-            index = 0;
-        cache[index].ttl = TTL;
-        strcpy(cache[index].request, request);
-        cache[index].respond[0] = '\0';
+        cache[write_ind].ttl = TTL;
+        strcpy(cache[write_ind].request, request);
+        cache[write_ind].respond[0] = '\0';
         // Search in file
         const size_t len = strlen(request);
         ifstream ifs("words.txt", ifstream::in);
@@ -165,18 +169,35 @@ public:
             string tmp;
             ifs >> tmp;
             if (strncmp(request, tmp.c_str(), len) == 0) {
-                strcat(cache[index].respond, tmp.append("\n").data());
+                strcat(cache[write_ind].respond, tmp.append("\n").data());
                 counter++;
             }
         }
         ifs.close();
         // Make response
         char *response = (char *) malloc ((S_WORDS + 1) * N_WORDS);
-        strcpy(response, cache[index].respond);
+        strcpy(response, cache[write_ind].respond);
         mutex.unlock();
         return response;
     }
+    void ttl_decr() {
+        while(true) {
+            mutex.lock();
+            cached_elem *cache = memory.get();
+            for (int i = 0; i < N_CACHED; i++) {
+                if (cache[i].ttl > 0) {
+                    cache[i].ttl--;
+                }
+            }
+            mutex.unlock();
+            sleep(1);
+        }
+    }
 };
+
+void ttl_handler(Shared_cache *cache) {
+    cache->ttl_decr();
+}
 
 void worker(int master_socket, Shared_cache *cache) {
     while (true) {
@@ -207,6 +228,10 @@ void master(uint16_t port) {
     // Init cache
     Shared_cache cache;
     // Init workers
+    if (!fork()) {
+        ttl_handler(&cache);
+        exit(0);
+    }
     int worker_socket[N_WORKERS];
     for (int i = 0; i < N_WORKERS; i++) {
         int socket_pair[2];
