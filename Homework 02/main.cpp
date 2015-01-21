@@ -69,73 +69,68 @@ public:
             char request[BUF_SIZE];
             // Get client request
             int client_socket = get_socket();
-            while(true) {
-                ssize_t req_size = recv(client_socket, request, BUF_SIZE, 0);
-                if (req_size <= 0) {
-                    shutdown(client_socket, SHUT_RDWR);
-                    break;
-                }
-                string version, path, method;
-                stringstream req(request, ios_base::in);
-                req >> method >> path >> version;
-                // GET and HEAD
-                if (!method.compare("GET") || !method.compare("HEAD")) {
-                    // Headers
-                    long size = get_file_size(dir + path);
-                    if (size < 0) {
-                        string header = "HTTP/1.0 404 Not Found\n";
-                        ssize_t resp_size = send(client_socket, header.data(), header.size(), 0);
-                        continue;
-                    }
-                    string header = "HTTP/1.0 200 OK\n";
-                    if (method.compare("HEAD") == 0) {
-                        ssize_t resp_size = send(client_socket, header.data(), header.size(), 0);
-                        if (resp_size < header.size()) {
-                            shutdown(client_socket, SHUT_RDWR);
-                            break;
-                        }
-                    } else {
-                        header += "Content-Length: " + to_string(size) + "\n";
-                        header += "Content-Type: " + get_content_type(path) + "\n\n";
-                        ssize_t resp_size = send(client_socket, header.data(), header.size(), 0);
-                        if (resp_size < header.size()) {
-                            shutdown(client_socket, SHUT_RDWR);
-                            break;
-                        }
-                        // Content
-                        ifstream ifs(dir + path, ifstream::in | ifstream::binary);
-                        char buf[BUF_SIZE];
-                        while (ifs.read(buf, BUF_SIZE)) {
-                            ssize_t resp_size = send(client_socket, buf, size_t(ifs.gcount()), 0);
-                            if (resp_size < size_t(ifs.gcount())) {
-                                shutdown(client_socket, SHUT_RDWR);
-                                break;
-                            }
-                        }
-                        if (ifs.eof()) {
-                            if (ifs.gcount() > 0) {
-                                ssize_t resp_size = send(client_socket, buf, size_t(ifs.gcount()), 0);
-                                if (resp_size < size_t(ifs.gcount()))
-                                    shutdown(client_socket, SHUT_RDWR);
-                            }
-                        }
-                        ifs.close();
-                    }
-                // POST
-                } else if (!method.compare("POST")) {
-                    ofstream ofs(dir + path, ofstream::out | ofstream::app | ofstream::binary);
-                    if (!ofs.good()) {
-                        cerr << "Access denied";
-                        exit(1);
-                    }
-                    string header = "HTTP/1.0 200 OK\n";
+            ssize_t req_size = recv(client_socket, request, BUF_SIZE, 0);
+            if (req_size <= 0) {
+                shutdown(client_socket, SHUT_RDWR);
+                close(client_socket);
+                continue;
+            }
+            string version, path, method;
+            stringstream req(request, ios_base::in);
+            req >> method >> path >> version;
+            // GET and HEAD
+            if (!method.compare("GET") || !method.compare("HEAD")) {
+                // Headers
+                long size = get_file_size(dir + path);
+                if (size < 0) {
+                    string header = "HTTP/1.0 404 Not Found\n";
                     ssize_t resp_size = send(client_socket, header.data(), header.size(), 0);
-                    ofs.close();
-                } else {
-                    cerr << "Unknown method";
                     shutdown(client_socket, SHUT_RDWR);
-                    break;
+                    close(client_socket);
+                    continue;
                 }
+                string header = "HTTP/1.0 200 OK\n";
+
+                // HEAD
+                if (method.compare("HEAD") == 0) {
+                    ssize_t resp_size = send(client_socket, header.data(), header.size(), 0);
+                    shutdown(client_socket, SHUT_RDWR);
+                    close(client_socket);
+                // GET
+                } else {
+                    header += "Content-Length: " + to_string(size) + "\n";
+                    header += "Content-Type: " + get_content_type(path) + "\n\n";
+                    send(client_socket, header.data(), header.size(), 0);
+                    // Content
+                    ifstream ifs(dir + path, ifstream::in | ifstream::binary);
+                    char buf[BUF_SIZE];
+                    while (ifs.read(buf, BUF_SIZE)) {
+                        ssize_t resp_size = send(client_socket, buf, size_t(ifs.gcount()), 0);
+                        if (resp_size < size_t(ifs.gcount()))
+                            break;
+                    }
+                    if (ifs.eof() and (ifs.gcount() > 0))
+                        send(client_socket, buf, size_t(ifs.gcount()), 0);
+                    shutdown(client_socket, SHUT_RDWR);
+                    close(client_socket);
+                    ifs.close();
+                }
+            // POST
+            } else if (!method.compare("POST")) {
+                ofstream ofs(dir + path, ofstream::out | ofstream::app | ofstream::binary);
+                if (!ofs.good()) {
+                    cerr << "Access denied";
+                    shutdown(client_socket, SHUT_RDWR);
+                }
+                string header = "HTTP/1.0 200 OK\n";
+                ssize_t resp_size = send(client_socket, header.data(), header.size(), 0);
+                shutdown(client_socket, SHUT_RDWR);
+                close(client_socket);
+                ofs.close();
+            } else {
+                cerr << "Unknown method";
+                shutdown(client_socket, SHUT_RDWR);
+                close(client_socket);
             }
         }
     }
@@ -189,8 +184,7 @@ int main(int argc, char *argv[]) {
     uint16_t port = 12345;
     int n_worker = 1;
     int c;
-    while ((c = getopt(argc, argv, "dhpw:")) != -1) {
-        stringstream ss(optarg, ios_base::in);
+    while ((c = getopt(argc, argv, "d:h:p:w:")) != -1) {
         switch (c) {
             case 'd':
                 dir_path = optarg;
@@ -199,10 +193,10 @@ int main(int argc, char *argv[]) {
                 host = optarg;
                 break;
             case 'p':
-                ss >> port;
+                port = atoi(optarg);
                 break;
             case 'w':
-                ss >> n_worker;
+                n_worker = atoi(optarg);
                 break;
             case '?':
                 if (optopt == 'd' || optopt == 'h' || optopt == 'p' || optopt == 'w')
