@@ -1,9 +1,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <stdlib.h>
 #include <unistd.h>
-#include <sys/types.h>
 #include <iostream>
 
 using namespace std;
@@ -19,23 +17,25 @@ int main() {
         sockets[i] = socket(AF_INET, SOCK_STREAM, 0);
         sockaddr_in addr;
         addr.sin_family = AF_INET;
-        addr.sin_port = htons(5081 + i);
+        addr.sin_port = htons(1234 + i);
         addr.sin_addr.s_addr = INADDR_ANY;
         bind(sockets[i], (struct sockaddr *) &addr, sizeof (addr));
         listen(sockets[i], 10);
         cout << "[LISTEN] socket " << sockets[i] << endl;
     }
+
     // Receiver
     int out_sock = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in addr;
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(5091);
+    addr.sin_port = htons(12345);
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (connect(out_sock, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
         cerr << "destination server unavailible" << endl;
         return 1;
     }
     cout<< "[CONN] socket " << out_sock << endl;
+
     // EPOLL init
     int epfd = epoll_create(1);
     if (epfd < 0) {
@@ -51,6 +51,7 @@ int main() {
             return 1;
         }
     }
+
     // Main cycle
     while (true) {
         int nfds = epoll_wait(epfd, events, EVENT_NUM, -1);
@@ -61,7 +62,8 @@ int main() {
         // Event handling
         for (int n = 0; n < nfds; n++) {
             int check_id;
-            // Listeners handling
+
+            // Listeners work
             for (check_id = 0; check_id < MAX_CONN; check_id++) {
                 if (sockets[check_id] == events[n].data.fd) {
                     sockaddr_in client;
@@ -81,7 +83,8 @@ int main() {
                     break;
                 }
             }
-            //
+
+            // Proxy work
             if (check_id >= MAX_CONN) {
                 if (events[n].events & EPOLLIN) {
                     char buf[BUF_SIZE];
